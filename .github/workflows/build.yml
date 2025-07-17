@@ -1,0 +1,24 @@
+name: Build
+on:
+  push:
+    branches:
+      - development
+  pull_request:
+    branches:
+      - main
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  validate-pull-request:
+    uses: ./.github/workflows/maven-build.yml
+    with:
+      java-version: '21'
+      build-type: 'snapshot'
+      skip-tests: 'false'
+      publish: 'false'
+      maven-options: '-Pdeploy'
+      runner-group: 'az-private-netw-linux-prd'
+      workflow-version: 'v1.2.0'
+    secrets: inherit
+

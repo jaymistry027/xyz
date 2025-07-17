@@ -1,0 +1,206 @@
+name: 'Generic Maven Build and Publish Action (Linux)'
+description: 'Reusable action to build and publish Maven projects (Linux)'
+inputs:
+  java-version:
+    description: 'The Java version to use'
+    required: true
+  build-type:
+    description: 'Type of build: snapshot or release'
+    required: true
+  skip-tests:
+    description: 'Skip tests during Maven build (true or false)'
+    required: true
+  publish:
+    description: 'Publish artifacts to Artifactory (true or false)'
+    required: true
+  release-repo-id:
+    description: 'Release Distribution Management ID (since POM lacks distributionManagement section)'
+    required: true
+  release-repo-url:
+    description: 'Release Distribution Management URL (since POM lacks distributionManagement section)'
+    required: true
+  snapshot-repo-id:
+    description: 'Snapshot Distribution Management ID (since POM lacks distributionManagement section)'
+    required: true
+  snapshot-repo-url:
+    description: 'Snapshot Distribution Management URL (since POM lacks distributionManagement section)'
+    required: true
+  maven-options:
+    description: 'Optional Maven Parameters'
+    required: true
+  maven-settings-xml:
+    description: 'Maven settings.xml file'
+    required: true
+  artifactory-username:
+    description: 'Artifactory username'
+    required: true
+  artifactory-token:
+    description: 'Artifactory token'
+    required: true
+  azure-devops-username:
+    description: 'AzureDevOps username'
+    required: true
+  azure-devops-password:
+    description: 'AzureDevOps password'
+    required: true
+  acr-opsgbftech-username:
+    description: 'ACR OpsGBFTech Username'
+    required: true
+  acr-opsgbftech-password:
+    description: 'ACR OpsGBFTech Password'
+    required: true
+  storage-opsgbftech-account-name:
+    description: 'Storage OpsGBFTech Account Name'
+    required: true
+  storage-opsgbftech-client-id:
+    description: 'Storage OpsGBFTech Client ID'
+    required: true
+  storage-opsgbftech-client-secret:
+    description: 'Storage OpsGBFTech Client Secret'
+    required: true
+  storage-opsgbftech-tenant-id:
+    description: 'Storage OpsGBFTech Tenant ID'
+    required: true
+  storage-opsgbftech-subscription-id:
+    description: 'Storage OpsGBFTech Subscription ID'
+    required: true
+  storage-opsgbftech-container-name:
+    description: 'Storage OpsGBFTech Container Name'
+    required: true
+  svc-gh-core-token:
+    description: 'GitHub Core token for service account'
+    required: true
+  apollo-root-cert-base64:
+    description: 'Base64-encoded Apollo Root Certificate'
+    required: true
+  build-tools-root:
+    description: 'Build Tools Root Folder'
+    required: false
+    default: '/mnt/build-tools'
+  deploy-pages:
+    type: string
+    description: 'Deploy to GitHub Pages (true or false)'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Apollo Root Certificate
+      shell: bash
+      run: |
+        echo "${{ inputs.apollo-root-cert-base64 }}" | base64 --decode > $GITHUB_WORKSPACE/apollo-root-ca.crt
+        sudo cp $GITHUB_WORKSPACE/apollo-root-ca.crt /usr/local/share/ca-certificates/apollo-root-ca.crt
+        sudo update-ca-certificates
+        sudo $JAVA_HOME_${{ inputs.java-version }}_X64/bin/keytool -noprompt -trustcacerts -keystore $JAVA_HOME_${{ inputs.java-version }}_X64/lib/security/cacerts -storepass changeit -alias Apollo-Root -import -file $GITHUB_WORKSPACE/apollo-root-ca.crt
+        git config --global http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
+
+    - name: Generate Maven settings.xml
+      env:
+        MAVEN_SETTINGS_XML: ${{ inputs.maven-settings-xml }}
+      shell: bash
+      run: |
+        echo "$MAVEN_SETTINGS_XML" > $GITHUB_WORKSPACE/settings.xml
+        sed -i "s/{{ARTIFACTORY_USERNAME}}/${{ inputs.artifactory-username }}/g" $GITHUB_WORKSPACE/settings.xml
+        sed -i "s/{{ARTIFACTORY_TOKEN}}/${{ inputs.artifactory-token }}/g" $GITHUB_WORKSPACE/settings.xml
+        sed -i "s/{{AZURE_DEVOPS_USERNAME}}/${{ inputs.azure-devops-username }}/g" $GITHUB_WORKSPACE/settings.xml
+        sed -i "s/{{AZURE_DEVOPS_PASSWORD}}/${{ inputs.azure-devops-password }}/g" $GITHUB_WORKSPACE/settings.xml
+        sed -i "s/{{SVC_GH_CORE_OPSGBF_RW}}/${{ inputs.svc-gh-core-token }}/g" $GITHUB_WORKSPACE/settings.xml
+
+    - name: Configure APT to Use Artifactory with Authentication
+      shell: bash
+      run: |
+        echo "deb [trusted=yes] https://${{ inputs.artifactory-username }}:${{ inputs.artifactory-token }}@artifactory.apollo.com/artifactory/microsoft-apt-remote jammy main" | sudo tee /etc/apt/sources.list.d/microsoft-artifactory.list
+#can add own usename and password
+    - name: Login to Azure
+      uses: Azure/login@v2.0.0
+      with:
+        creds: '{"clientId":"${{ inputs.storage-opsgbftech-client-id }}","clientSecret":"${{ inputs.storage-opsgbftech-client-secret }}","subscriptionId":"${{ inputs.storage-opsgbftech-subscription-id }}","tenantId":"${{ inputs.storage-opsgbftech-tenant-id }}"}'
+
+    - name: Set Release Version
+      if: inputs.build-type == 'release'
+      shell: bash
+      run: |
+        mvn -s $GITHUB_WORKSPACE/settings.xml versions:set -DremoveSnapshot -DgenerateBackupPoms=false -DprocessAllModules=true
+        version=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+        echo "project_version=${version}" >> $GITHUB_ENV
+        cp pom.xml pom.xml.bak
+
+    - name: Compile, Package, and Install in local maven repository
+      shell: bash
+#docker push code
+      run: |
+        mvn -s $GITHUB_WORKSPACE/settings.xml clean install ${{ inputs.maven-options }} \
+          -Dmaven.test.skip=${{ inputs.skip-tests }} \
+          -Dacr.opsgbftech.username=${{ inputs.acr-opsgbftech-username }} \
+          -Dacr.opsgbftech.password=${{ inputs.acr-opsgbftech-password }} \
+          -Dbuild.tools=${{ inputs.build-tools-root }} 
+#not necessary to have
+    - name: Prepare project site from compiled sources
+      if: inputs.deploy-pages == 'true'
+      shell: bash
+      run: |
+        mvn -s $GITHUB_WORKSPACE/settings.xml site -DskipTests
+
+    - name: Setup Pages
+      if: inputs.deploy-pages == 'true'
+      uses: actions/configure-pages@v3
+
+    - name: Upload site
+      if: inputs.deploy-pages == 'true'
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: './target/site'
+
+    - name: Deploy site to GitHub Pages
+      if: inputs.deploy-pages == 'true'
+      id: deployment
+      uses: actions/deploy-pages@v4
+#going to be deprecated
+    - name: Publish the artifacts to Artifactory
+      shell: bash
+      run: |
+        mvn -s $GITHUB_WORKSPACE/settings.xml deploy \
+          -Dmaven.test.skip=${{ inputs.skip-tests }} \
+          -Dacr.opsgbftech.username=${{ inputs.acr-opsgbftech-username }} \
+          -Dacr.opsgbftech.password=${{ inputs.acr-opsgbftech-password }} \
+          -Dbuild.tools=${{ inputs.build-tools-root }} 
+
+    - name: Revert pom.xml to original
+      if: inputs.build-type == 'release'
+      shell: bash
+      run: |
+        mv pom.xml.bak pom.xml
+        MODULES=$(find . -name "pom.xml" -not -path "./pom.xml")
+        if [ -n "$MODULES" ]; then
+          git add pom.xml **/pom.xml
+        else
+          git add pom.xml
+        fi
+        git commit -m "Release version ${{ env.project_version }} [skip actions]"
+        git tag -a v${{ env.project_version }} -m "Release version ${{ env.project_version }}"
+        git push origin "${GITHUB_REF#refs/heads/}"
+        git push origin --tags
+
+    - name: Set Next Snapshot version
+      if: inputs.build-type == 'release'
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.next-version }}"]; then
+          mvn -s $GITHUB_WORKSPACE/settings.xml \
+              build-helper:parse-version \
+              versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.minorVersion}.\${parsedVersion.nextIncrementalVersion}-SNAPSHOT \
+              versions:commit
+        else
+          mvn -s $GITHUB_WORKSPACE/settings.xml \
+              versions:set -DnewVersion=${{ inputs.next-version }}-SNAPSHOT \
+              versions:commit
+        fi
+        MODULES=$(find . -name "pom.xml" -not -path "./pom.xml")
+        if [ -n "$MODULES" ]; then
+          git add pom.xml **/pom.xml
+        else
+          git add pom.xml
+        fi
+        git commit -m "Prepare for next development iteration [skip actions]"
+        git push origin "${GITHUB_REF#refs/heads/}"

@@ -1,0 +1,124 @@
+name: "Generic Maven Build and Publish Action"
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        type: string
+        description: The Java version to use
+        required: true
+        default: '21'
+      build-type:
+        type: string
+        description: "Type of build snapshot or release"
+        required: true
+        default: 'snapshot'
+      skip-tests:
+        type: string
+        description: 'Skip tests during Maven build (true or false)'
+        required: false
+        default: 'true'
+      publish:
+        type: string
+        description: 'Publish artifacts to Artifactory (true or false)'
+        required: false
+        default: 'true'
+      release-repo-id:
+        type: string
+        description: 'Release Distribution Management ID (since POM lacks distributionManagement section)'
+        required: false
+        default: 'central'
+      release-repo-url:
+        type: string
+        description: 'Release Distribution Management URL (since POM lacks distributionManagement section)'
+        required: false
+        default: 'https://artifactory.apollo.com/artifactory/libs-releases-local'
+      snapshot-repo-id:
+        type: string
+        description: 'Snapshot Distribution Management ID (since POM lacks distributionManagement section)'
+        required: false
+        default: 'snapshots'
+      snapshot-repo-url:
+        type: string
+        description: 'Snapshot Distribution Management URL (since POM lacks distributionManagement section)'
+        required: false
+        default: 'https://artifactory.apollo.com/artifactory/libs-snapshots-local'
+      next-version:
+        type: string
+        description: 'Next development version (e.g., 1.0.1) after the release is successful. If not provided, the next development version will be calculated automatically.'
+        required: false
+      maven-options:
+        type: string
+        description: 'Optional Maven Parameters'
+        required: false
+      runner-group:
+        type: string
+        description: 'Runner Group'
+        required: true
+      workflow-version:
+        type: string
+        description: 'Workflow Version'
+        required: true
+      deploy-pages:
+        type: string
+        description: 'Deploy to GitHub Pages (true or false)'
+        required: false
+
+jobs:
+  maven-build-publish:
+    runs-on:
+      group: ${{ inputs.runner-group }}
+    steps:
+      - name: Setup gh user
+        run: |
+          git config --global user.email "service-github-core@apollo.com"
+          git config --global user.name "service-github-core"
+
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SVC_GH_CORE_OPSGBF_RW }}
+
+      - name: Set up Java ${{ inputs.java-version }}
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.java-version }}
+
+      - name: Cache Maven Dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-
+
+      - name: 'Linux sub-action'
+        if: runner.os == 'Linux'
+        uses: jenseng/dynamic-uses@v1
+        with:
+          uses: ./.github/actions/maven-build
+          with: |
+            {
+              "maven-settings-xml": '${{ secrets.MAVEN_SETTINGS_XML }}', //organization specific settings.xml
+              "artifactory-username": "${{ secrets.ARTIFACTORY_USERNAME }}", // to authenticate with Artifactory
+              "artifactory-token": "${{ secrets.ARTIFACTORY_TOKEN }}", 
+              "azure-devops-username": "${{ secrets.AZURE_DEVOPS_USERNAME }}", //to add to the settings.xml for the Artifactory
+              "azure-devops-password": "${{ secrets.AZURE_DEVOPS_PASSWORD }}",
+              "svc-gh-core-token": "${{ secrets.SVC_GH_CORE_OPSGBF_RW }}",
+              "acr-corptech-username": "${{ corptech_admin }}", //will be changed to corp tech based on our secrets
+              "acr-corptech-password": "${{ secrets.ACR_CORPTECH_TOKEN_ADMIN }}",
+              "apollo-root-cert-base64": "${{ secrets.APOLLO_ROOT_CERT_BASE64 }}",
+              "java-version": "${{ inputs.java-version }}",
+              "build-type": "${{ inputs.build-type }}",
+              "skip-tests": "${{ inputs.skip-tests }}",
+              "publish": "${{ inputs.publish }}",
+              "release-repo-id": "${{ inputs.release-repo-id }}",
+              "release-repo-url": "${{ inputs.release-repo-url }}",
+              "snapshot-repo-id": "${{ inputs.snapshot-repo-id }}",
+              "snapshot-repo-url": "${{ inputs.snapshot-repo-url }}",
+              "next-version": "${{ inputs.next-version }}",
+              "maven-options": "${{ inputs.maven-options }}",
+              "deploy-pages": "${{ inputs.deploy-pages }}"
+            }
